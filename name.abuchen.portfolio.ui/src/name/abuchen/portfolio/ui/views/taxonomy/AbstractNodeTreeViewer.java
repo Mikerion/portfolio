@@ -3,7 +3,6 @@ package name.abuchen.portfolio.ui.views.taxonomy;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -82,6 +81,7 @@ import name.abuchen.portfolio.ui.views.columns.NameColumn;
 import name.abuchen.portfolio.ui.views.columns.NameColumn.NameColumnLabelProvider;
 import name.abuchen.portfolio.ui.views.columns.NoteColumn;
 import name.abuchen.portfolio.ui.views.columns.SymbolColumn;
+import name.abuchen.portfolio.ui.views.taxonomy.TaxonomyModel.SortMode;
 import name.abuchen.portfolio.util.TextUtil;
 
 /* package */abstract class AbstractNodeTreeViewer extends Page implements ModificationListener
@@ -279,57 +279,6 @@ import name.abuchen.portfolio.util.TextUtil;
         }
     }
 
-    private enum SortCriterion
-    {
-        TYPE, NAME, ACTUAL
-    }
-
-    /**
-     * Sort mode of a classification. If a mode other than {@link #MANUAL} is
-     * active, the children of that classification are kept sorted dynamically,
-     * i.e. new and moved items are automatically placed according to the
-     * criteria. The mode is stored per classification and persisted with the
-     * file.
-     */
-    public enum SortMode
-    {
-        MANUAL, //
-        TYPE_NAME(SortCriterion.TYPE, SortCriterion.NAME), //
-        TYPE_ACTUAL(SortCriterion.TYPE, SortCriterion.ACTUAL), //
-        NAME(SortCriterion.NAME), //
-        ACTUAL(SortCriterion.ACTUAL);
-
-        private final SortCriterion[] criteria;
-
-        SortMode(SortCriterion... criteria)
-        {
-            this.criteria = criteria;
-        }
-
-        SortCriterion[] getCriteria()
-        {
-            return criteria;
-        }
-
-        static SortMode of(String value)
-        {
-            if (value == null)
-                return MANUAL;
-
-            try
-            {
-                return valueOf(value);
-            }
-            catch (IllegalArgumentException e)
-            {
-                return MANUAL;
-            }
-        }
-    }
-
-    /** key used to persist the sort mode on a classification's data map */
-    private static final String KEY_SORT_MODE = "sort-mode"; //$NON-NLS-1$
-
     protected static final String MENU_GROUP_DEFAULT_ACTIONS = "defaultActions"; //$NON-NLS-1$
     protected static final String MENU_GROUP_CUSTOM_ACTIONS = "customActions"; //$NON-NLS-1$
     protected static final String MENU_GROUP_DELETE_ACTIONS = "deleteActions"; //$NON-NLS-1$
@@ -419,7 +368,7 @@ import name.abuchen.portfolio.util.TextUtil;
     {
         MenuManager sorting = new MenuManager(Messages.MenuTaxonomySortTreeBy);
 
-        SortMode activeMode = getSortMode(node);
+        SortMode activeMode = getModel().getSortMode(node);
 
         addSortModeAction(sorting, Messages.MenuTaxonomySortManual, SortMode.MANUAL, node, activeMode, recursive);
         sorting.add(new Separator());
@@ -874,7 +823,8 @@ import name.abuchen.portfolio.util.TextUtil;
 
         // re-apply the sort mode of every classification so that newly added or
         // moved items are automatically placed according to each folder's mode
-        applyAutoSortRecursively(getModel().getClassificationRootNode());
+        // (recalculate() already re-sorts value-based modes)
+        getModel().applyStoredSort(getModel().getClassificationRootNode(), false);
 
         getModel().fireTaxonomyModelChange(node);
         getModel().markDirty();
@@ -1117,125 +1067,20 @@ import name.abuchen.portfolio.util.TextUtil;
     private void addSortModeAction(MenuManager menu, String label, SortMode mode, TaxonomyNode node,
                     SortMode activeMode, boolean recursive)
     {
-        Action action = new SimpleAction(label, IAction.AS_CHECK_BOX, a -> applyAutoSort(node, mode, recursive));
+        Action action = new SimpleAction(label, IAction.AS_CHECK_BOX, a -> applySortMode(node, mode, recursive));
         action.setChecked(mode == activeMode);
         menu.add(action);
     }
 
     /**
-     * Returns the sort mode stored for the given classification node.
+     * Applies the sort mode chosen in the menu to the given classification node
+     * and refreshes the tree.
      */
-    private SortMode getSortMode(TaxonomyNode node)
+    private void applySortMode(TaxonomyNode node, SortMode mode, boolean recursive)
     {
-        if (!node.isClassification())
-            return SortMode.MANUAL;
-
-        return SortMode.of((String) node.getClassification().getData(KEY_SORT_MODE));
-    }
-
-    /**
-     * Stores the sort mode on the given classification node.
-     */
-    private void setSortMode(TaxonomyNode node, SortMode mode)
-    {
-        if (!node.isClassification())
-            return;
-
-        // do not store the default -> keeps the file clean
-        node.getClassification().setData(KEY_SORT_MODE, mode == SortMode.MANUAL ? null : mode.name());
-    }
-
-    /**
-     * Activates the given sort mode for a classification node and – if a mode
-     * other than {@link SortMode#MANUAL} is chosen – sorts its children
-     * immediately. When {@code recursive} is set, the mode is applied to all
-     * descendant classifications as well.
-     */
-    private void applyAutoSort(TaxonomyNode node, SortMode mode, boolean recursive)
-    {
-        setAutoSort(node, mode, recursive);
+        getModel().setSortMode(node, mode, recursive);
 
         getModel().markDirty();
         getModel().fireTaxonomyModelChange(node);
-    }
-
-    private void setAutoSort(TaxonomyNode node, SortMode mode, boolean recursive)
-    {
-        setSortMode(node, mode);
-
-        if (mode != SortMode.MANUAL)
-            sort(node, mode.getCriteria());
-
-        if (recursive)
-        {
-            for (TaxonomyNode child : node.getChildren())
-            {
-                if (child.isClassification())
-                    setAutoSort(child, mode, true);
-            }
-        }
-    }
-
-    /**
-     * Re-applies the stored sort mode of every classification to its own
-     * children. Called after structural edits so that new or moved items are
-     * placed according to each folder's sort mode.
-     */
-    private void applyAutoSortRecursively(TaxonomyNode node)
-    {
-        if (!node.isClassification())
-            return;
-
-        SortMode mode = getSortMode(node);
-        if (mode != SortMode.MANUAL)
-            sort(node, mode.getCriteria());
-
-        for (TaxonomyNode child : node.getChildren())
-            applyAutoSortRecursively(child);
-    }
-
-    /**
-     * Sorts the children of a node, but does not fire update notifications.
-     */
-    private void sort(TaxonomyNode node, SortCriterion... criteria) // NOSONAR
-    {
-        Collections.sort(node.getChildren(), (node1, node2) -> { // NOSONAR
-            // unassigned category always stays at the end of the list
-            if (node1.isUnassignedCategory())
-                return 1;
-            if (node2.isUnassignedCategory())
-                return -1;
-
-            for (int ii = 0; ii < criteria.length; ii++)
-            {
-                switch (criteria[ii])
-                {
-                    case TYPE:
-                        if (node1.isClassification() && !node2.isClassification())
-                            return -1;
-                        if (!node1.isClassification() && node2.isClassification())
-                            return 1;
-                        break;
-                    case NAME:
-                        int cn = TextUtil.compare(node1.getName(), node2.getName());
-                        if (cn != 0)
-                            return cn;
-                        break;
-                    case ACTUAL:
-                        int ca = node2.getActual().compareTo(node1.getActual());
-                        if (ca != 0)
-                            return ca;
-                        break;
-                    default:
-
-                }
-            }
-
-            return 0;
-        });
-
-        int rank = 0;
-        for (TaxonomyNode child : node.getChildren())
-            child.setRank(rank++);
     }
 }
